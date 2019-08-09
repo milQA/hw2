@@ -5,7 +5,6 @@ import (
 	"strconv"
 	"sync"
 	"time"
-	"runtime"
 	"fmt"
 	"sync/atomic"
 )
@@ -77,8 +76,9 @@ func MultiHash(data string) string {
 		go func( /*wg *sync.WaitGroup,*/ th int, data string) {
 			//defer wg.Done()
 			fcrc32(ch1, strconv.Itoa(th)+data) // здесь
-			runtime.Gosched()
+			
 		}( /*wg,*/ th, data)
+		time.Sleep(time.Millisecond)
 	}
 	for th := 0; th < 6; th++ {
 		answer = append(answer, <-ch1)
