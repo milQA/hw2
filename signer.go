@@ -1,109 +1,90 @@
 package main
 
 import (
-	"fmt"
+	"runtime"
 	"sort"
 	"strconv"
 	"sync"
-	"time"
 )
 
-type jobsCH struct {
-	in  chan interface{}
-	out chan interface{}
-}
-
-// доделано
 func ExecutePipeline(jobs ...job) {
-	ch := make([]jobsCH, len(jobs)+1)
+	wg := &sync.WaitGroup{}
+	ch := make([]chan interface{}, len(jobs)+1)
 	for i := 0; i < len(jobs)+1; i++ {
-		ch[i].out = make(chan interface{}, 5)
-		if i > 0 {
-			ch[i].in = ch[i-1].out
-		}
-
+		ch[i] = make(chan interface{}, 6)
 	}
-	for i, job := range jobs {
-
-		go job(ch[i].in, ch[i].out)
-
+	for i, jb := range jobs {
+		in := ch[i]
+		out := ch[i+1]
+		wg.Add(1)
+		go func(j job, in, out chan interface{}, wg *sync.WaitGroup) {
+			j(in, out)
+			close(out)
+			wg.Done()
+		}(jb, in, out, wg)
 	}
-
-	ans := <-ch[len(jobs)].out
-	fmt.Printf("Ответ: %s", ans)
+	wg.Wait()
 }
 
-// готово
 func SingleHash(in, out chan interface{}) {
-	fmt.Println("Sign")
 	mu := &sync.Mutex{}
+	mu2 := &sync.Mutex{}
+	wg := &sync.WaitGroup{}
 	for input := range in {
-		datain := input.(int)
-		data := strconv.Itoa(datain)
-		ch1 := make(chan string)
-		ch2 := make(chan string)
-		ch3 := make(chan string)
+		mu2.Lock()
+		wg.Add(1)
+		go func(wg *sync.WaitGroup) {
+			ch2 := make(chan string)
+			ch3 := make(chan string)
+			datain := input.(int)
+			data := strconv.Itoa(datain)
+			mu.Lock()
+			md5data := DataSignerMd5(data)
+			mu.Unlock()
 
-		mu.Lock()
-		ch1 <- DataSignerMd5(data)
-		mu.Unlock()
+			go fcrc32(ch2, md5data)
+			go fcrc32(ch3, data)
 
-		go fcrc32(ch2, data)
-		go func(ch3 chan<- string, ch1 <-chan string) {
-			md5data := <-ch1
-			fcrc32(ch3, md5data)
-		}(ch3, ch1)
-		time.Sleep(time.Second)
-		result1 := <-ch2
-		result2 := <-ch3
-		result := result1 + "~" + result2
-		fmt.Println(result) //norm. без перегревов
-		//crc32(data)+"~"+crc32(md5(data))
-		out <- result
+			result1 := <-ch3
+			result2 := <-ch2
+			result := result1 + "~" + result2
+			out <- result
+			wg.Done()
+		}(wg)
+		mu2.Unlock()
+		runtime.Gosched()
 	}
-	time.Sleep(time.Second)
-	close(out)
-
+	wg.Wait()
 }
 
-//сделано. Выводит MH result
 func MultiHash(in, out chan interface{}) {
-	fmt.Println("Mult")
+	wg := &sync.WaitGroup{}
 	for input := range in {
-		data := input
-		var answer []string
-		ch1 := make(chan string)
-		wg := &sync.WaitGroup{}
-		for th := 0; th < 6; th++ {
-			wg.Add(1)
-			go func(wg *sync.WaitGroup, th int, data string) {
-				defer wg.Done()
-				fcrc32(ch1, strconv.Itoa(th)+data) // здесь
-
-			}(wg, th, data.(string))
-			time.Sleep(time.Millisecond)
-		}
-		for th := 0; th < 6; th++ {
-			answer = append(answer, <-ch1)
-			fmt.Println(th, "||", answer[th])
-		}
-		//time.Sleep(time.Millisecond)
-		//wg.Wait() //ожидание, что все MH отработают
-		ans := ""
-		for _, value := range answer {
-			ans = ans + value
-		}
-		//fmt.Println(ans)
-		out <- ans
+		wg.Add(1)
+		go func(wg *sync.WaitGroup) {
+			data := input.(string)
+			var answer []string
+			ch := make([]chan string, 6)
+			for th := 0; th < 6; th++ {
+				ch[th] = make(chan string)
+				go fcrc32(ch[th], strconv.Itoa(th)+data)
+			}
+			for th := 0; th < 6; th++ {
+				answer = append(answer, <-ch[th])
+			}
+			ans := ""
+			for _, value := range answer {
+				ans = ans + value
+			}
+			out <- ans
+			wg.Done()
+		}(wg)
+		runtime.Gosched()
 	}
-	time.Sleep(1 * time.Second)
-	close(out)
-
+	wg.Wait()
 }
 
-// нужно сделать сбор всех in в слайс
 func CombineResults(in, out chan interface{}) {
-	fmt.Println("Comb")
 	var data []string
 	for input := range in {
 		dataOne := input
@@ -115,13 +96,10 @@ func CombineResults(in, out chan interface{}) {
 		answer = answer + "_" + data[i]
 	}
 	out <- answer
-	time.Sleep(1 * time.Second)
-	close(out)
 }
 
 func fcrc32(ch chan<- string, data string) {
 	temp := DataSignerCrc32(data)
-	//fmt.Println("crc32 ",temp)
 	ch <- temp
 }
 
